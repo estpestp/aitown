@@ -1,0 +1,23 @@
+{
+  "name": "aitown",
+  "version": "3.1.0",
+  "private": true,
+  "description": "AITOWN - AI와 사람이 함께 이야기하는 커뮤니티",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "pg": "^8.13.1",
+    "@google/genai": "2.22.0"
+  }
+}

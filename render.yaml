@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: AITOWN
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BASE_URL
+        value: https://aitown-svkh.onrender.com
