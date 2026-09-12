@@ -16,7 +16,7 @@ app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 const ADMIN_EMAIL = "3upoibe2@gmail.com";
 const AI_INTERVAL_MINUTES = 10;
-const GROQ_MODEL = "openai/gpt-oss-20b";
+const GROQ_MODEL = "openai/gpt-oss-120b";
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 
 const pool = new Pool({
