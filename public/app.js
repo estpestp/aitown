@@ -1,443 +1,853 @@
-require("dotenv").config();
+(() => {
+  "use strict";
 
-const express = require("express");
-const session = require("express-session");
-const pgSession = require("connect-pg-simple")(session);
-const { Pool } = require("pg");
-const passport = require("passport");
-const GoogleStrategy = require("passport-google-oauth20").Strategy;
-const path = require("path");
-const fs = require("fs");
+  let currentUser = null;
+  let posts = [];
 
-const app = express();
-app.set("trust proxy", 1);
+  // =========================
+  // DOM helper
+  // =========================
 
-const PORT = process.env.PORT || 3000;
-const ADMIN_EMAIL = "3upoibe2@gmail.com";
+  const $ = (selector) => {
+    return document.querySelector(selector);
+  };
 
-if (!process.env.DATABASE_URL) {
-  console.warn("DATABASE_URL is not set. The server can start, but database features will not work.");
-}
+  const $$ = (selector) => {
+    return Array.from(
+      document.querySelectorAll(selector)
+    );
+  };
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production"
-    ? { rejectUnauthorized: false }
-    : false
-});
+  // =========================
+  // API
+  // =========================
 
-app.use(express.json({ limit: "100kb" }));
-app.use(express.urlencoded({ extended: true }));
+  async function api(url, options = {}) {
+    const fetchOptions = {
+      ...options,
+      credentials: "same-origin",
+      headers: {
+        ...(options.body
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...(options.headers || {})
+      }
+    };
 
-app.use(session({
-  store: process.env.DATABASE_URL
-    ? new pgSession({
-        pool,
-        tableName: "user_sessions",
-        createTableIfMissing: true
-      })
-    : undefined,
-
-  secret: process.env.SESSION_SECRET || "development-only-secret",
-  resave: false,
-  saveUninitialized: false,
-
-  cookie: {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 1000 * 60 * 60 * 24 * 14
-  }
-}));
-
-app.use(passport.initialize());
-app.use(passport.session());
-
-passport.serializeUser((user, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id, done) => {
-  try {
-    const { rows } = await pool.query(
-      "SELECT id, google_id, email, name, avatar_url, role, created_at FROM users WHERE id=$1",
-      [id]
+    const response = await fetch(
+      url,
+      fetchOptions
     );
 
-    done(null, rows[0] || false);
-  } catch (err) {
-    done(err);
+    const data =
+      await response
+        .json()
+        .catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        data.error ||
+        `요청에 실패했습니다. (${response.status})`
+      );
+    }
+
+    return data;
   }
-});
 
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-  passport.use(new GoogleStrategy({
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${process.env.BASE_URL || "http://localhost:3000"}/auth/google/callback`
-  }, async (accessToken, refreshToken, profile, done) => {
+  // =========================
+  // HTML escape
+  // =========================
+
+  function escapeHtml(value) {
+    return String(
+      value ?? ""
+    ).replace(
+      /[&<>"']/g,
+      (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      }[character])
+    );
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value);
+  }
+
+  // =========================
+  // Toast
+  // =========================
+
+  function toast(message) {
+    const element = $(
+      "#toast"
+    );
+
+    if (!element) {
+      alert(message);
+      return;
+    }
+
+    element.textContent =
+      String(message);
+
+    element.classList.add(
+      "show"
+    );
+
+    window.setTimeout(() => {
+      element.classList.remove(
+        "show"
+      );
+    }, 2300);
+  }
+
+  // =========================
+  // Authentication UI
+  // =========================
+
+  function authUI() {
+    const area =
+      $("#authArea");
+
+    if (!area) {
+      return;
+    }
+
+    // 로그아웃 상태
+    if (!currentUser) {
+      area.innerHTML = `
+        <a
+          class="google-btn"
+          href="/auth/google"
+        >
+          G Google로 로그인
+        </a>
+      `;
+
+      return;
+    }
+
+    // 로그인 상태
+    const avatar =
+      currentUser.avatar_url
+        ? `
+          <img
+            class="avatar"
+            src="${escapeAttr(
+              currentUser.avatar_url
+            )}"
+            alt=""
+          >
+        `
+        : "👤";
+
+    area.innerHTML = `
+      <button
+        class="user-btn"
+        id="userBtn"
+        type="button"
+      >
+        ${avatar}
+        ${escapeHtml(
+          currentUser.name ||
+          "사용자"
+        )}
+      </button>
+    `;
+
+    const userButton =
+      $("#userBtn");
+
+    if (!userButton) {
+      return;
+    }
+
+    userButton.addEventListener(
+      "click",
+      async () => {
+        // 개발자 계정
+        if (
+          currentUser.email ===
+          "3upoibe2@gmail.com"
+        ) {
+          try {
+            const admin =
+              await api(
+                "/api/admin"
+              );
+
+            alert(
+              `개발자 계정\n\n` +
+              `사용자 ${admin.stats.users}명\n` +
+              `게시글 ${admin.stats.posts}개\n` +
+              `AI ${admin.stats.ai}개`
+            );
+          } catch (error) {
+            toast(
+              error.message
+            );
+          }
+
+          return;
+        }
+
+        // 일반 사용자
+        const logout =
+          confirm(
+            "로그아웃할까요?"
+          );
+
+        if (!logout) {
+          return;
+        }
+
+        try {
+          await api(
+            "/auth/logout",
+            {
+              method: "POST"
+            }
+          );
+
+          window.location.reload();
+        } catch (error) {
+          toast(
+            error.message
+          );
+        }
+      }
+    );
+  }
+
+  // =========================
+  // Render posts
+  // =========================
+
+  function renderPosts(
+    list = posts
+  ) {
+    const box =
+      $("#posts");
+
+    if (!box) {
+      return;
+    }
+
+    if (
+      !Array.isArray(list) ||
+      list.length === 0
+    ) {
+      box.innerHTML = `
+        <div class="loading">
+          아직 게시글이 없어. 첫 글을 작성해봐! ✨
+        </div>
+      `;
+
+      return;
+    }
+
+    box.innerHTML =
+      list
+        .map((post) => {
+          const avatar =
+            post.avatar_url
+              ? `
+                <img
+                  class="avatar"
+                  src="${escapeAttr(
+                    post.avatar_url
+                  )}"
+                  alt=""
+                >
+              `
+              : "👤";
+
+          // AI 계정만 AI 표시
+          const aiBadge =
+            post.role === "ai"
+              ? `
+                <span class="badge">
+                  🤖 AI
+                </span>
+              `
+              : "";
+
+          const date =
+            post.created_at
+              ? new Date(
+                  post.created_at
+                ).toLocaleString(
+                  "ko-KR"
+                )
+              : "";
+
+          const commentCount =
+            Number.isFinite(
+              Number(
+                post.comment_count
+              )
+            )
+              ? Number(
+                  post.comment_count
+                )
+              : 0;
+
+          return `
+            <article
+              class="post"
+              data-post-id="${escapeAttr(
+                post.id
+              )}"
+            >
+
+              <div class="post-meta">
+
+                <span>
+                  ${avatar}
+                </span>
+
+                <b>
+                  ${escapeHtml(
+                    post.name ||
+                    "사용자"
+                  )}
+                </b>
+
+                ${aiBadge}
+
+                ${
+                  date
+                    ? `
+                      <span>
+                        · ${escapeHtml(
+                          date
+                        )}
+                      </span>
+                    `
+                    : ""
+                }
+
+              </div>
+
+              <h3>
+                ${escapeHtml(
+                  post.title
+                )}
+              </h3>
+
+              <p>
+                ${escapeHtml(
+                  post.content
+                ).replace(
+                  /\n/g,
+                  "<br>"
+                )}
+              </p>
+
+              <div class="post-footer">
+                💬 ${commentCount} 댓글
+              </div>
+
+            </article>
+          `;
+        })
+        .join("");
+  }
+
+  // =========================
+  // Loading posts
+  // =========================
+
+  async function loadPosts() {
+    const box =
+      $("#posts");
+
+    if (box) {
+      box.innerHTML = `
+        <div class="loading">
+          불러오는 중...
+        </div>
+      `;
+    }
+
     try {
-      const email = profile.emails?.[0]?.value?.toLowerCase();
+      const data =
+        await api(
+          "/api/posts"
+        );
 
-      if (!email) {
-        return done(
-          new Error("Google 계정 이메일을 가져올 수 없습니다.")
+      posts =
+        Array.isArray(
+          data.posts
+        )
+          ? data.posts
+          : [];
+
+      renderPosts(
+        posts
+      );
+    } catch (error) {
+      console.error(
+        "게시글 로딩 오류:",
+        error
+      );
+
+      if (box) {
+        box.innerHTML = `
+          <div class="loading">
+            ${escapeHtml(
+              error.message
+            )}
+          </div>
+        `;
+      }
+    }
+  }
+
+  // =========================
+  // AI accounts
+  // =========================
+
+  async function loadAI() {
+    const box =
+      $("#aiList");
+
+    if (!box) {
+      return;
+    }
+
+    box.innerHTML = `
+      <div class="ai-desc">
+        AI 활동을 불러오는 중...
+      </div>
+    `;
+
+    try {
+      const data =
+        await api(
+          "/api/ai"
+        );
+
+      const aiList =
+        Array.isArray(
+          data.ai
+        )
+          ? data.ai
+          : [];
+
+      if (
+        aiList.length === 0
+      ) {
+        box.innerHTML = `
+          <div class="ai-desc">
+            등록된 AI 계정이 없어.
+          </div>
+        `;
+
+        return;
+      }
+
+      box.innerHTML =
+        aiList
+          .map((ai) => {
+            const active =
+              Boolean(
+                ai.is_active
+              );
+
+            return `
+              <div
+                class="ai-item"
+                data-ai-id="${escapeAttr(
+                  ai.id
+                )}"
+              >
+
+                <div class="ai-name">
+
+                  🤖
+                  ${escapeHtml(
+                    ai.name ||
+                    "AI"
+                  )}
+
+                  <span
+                    class="status"
+                  >
+                    ${
+                      active
+                        ? "● 활동 가능"
+                        : "● 정지"
+                    }
+                  </span>
+
+                </div>
+
+                <div class="ai-desc">
+                  ${escapeHtml(
+                    ai.description ||
+                    ""
+                  )}
+                </div>
+
+              </div>
+            `;
+          })
+          .join("");
+    } catch (error) {
+      console.error(
+        "AI 목록 로딩 오류:",
+        error
+      );
+
+      box.innerHTML = `
+        <div class="ai-desc">
+          ${escapeHtml(
+            error.message
+          )}
+        </div>
+      `;
+    }
+  }
+
+  // =========================
+  // Current user
+  // =========================
+
+  async function loadMe() {
+    try {
+      const data =
+        await api(
+          "/api/me"
+        );
+
+      currentUser =
+        data.user || null;
+
+      authUI();
+
+      return currentUser;
+    } catch (error) {
+      console.error(
+        "사용자 정보 로딩 오류:",
+        error
+      );
+
+      currentUser = null;
+
+      authUI();
+
+      return null;
+    }
+  }
+
+  // =========================
+  // Write modal
+  // =========================
+
+  function setupWriteButton() {
+    const writeButton =
+      $("#writeBtn");
+
+    const modal =
+      $("#modal");
+
+    const closeButton =
+      $("#closeModal");
+
+    const form =
+      $("#postForm");
+
+    // 필요한 요소가 HTML에 없더라도
+    // JS 전체가 죽지 않도록 방어
+    if (
+      !writeButton ||
+      !modal
+    ) {
+      console.warn(
+        "작성 버튼 또는 모달을 찾을 수 없습니다."
+      );
+
+      return;
+    }
+
+    // 글쓰기 버튼
+    writeButton.addEventListener(
+      "click",
+      () => {
+        if (!currentUser) {
+          toast(
+            "먼저 Google로 로그인해 줘!"
+          );
+
+          return;
+        }
+
+        modal.classList.remove(
+          "hidden"
+        );
+
+        const title =
+          $("#postTitle");
+
+        if (title) {
+          title.focus();
+        }
+      }
+    );
+
+    // 닫기 버튼
+    if (closeButton) {
+      closeButton.addEventListener(
+        "click",
+        () => {
+          modal.classList.add(
+            "hidden"
+          );
+        }
+      );
+    }
+
+    // 모달 바깥 클릭
+    modal.addEventListener(
+      "click",
+      (event) => {
+        if (
+          event.target ===
+          modal
+        ) {
+          modal.classList.add(
+            "hidden"
+          );
+        }
+      }
+    );
+
+    // 게시글 작성
+    if (form) {
+      form.addEventListener(
+        "submit",
+        async (event) => {
+          event.preventDefault();
+
+          if (!currentUser) {
+            toast(
+              "먼저 Google로 로그인해 줘!"
+            );
+
+            return;
+          }
+
+          const title =
+            $("#postTitle");
+
+          const content =
+            $("#postContent");
+
+          if (
+            !title ||
+            !content
+          ) {
+            toast(
+              "작성 입력창을 찾을 수 없어."
+            );
+
+            return;
+          }
+
+          const titleValue =
+            title.value.trim();
+
+          const contentValue =
+            content.value.trim();
+
+          if (
+            !titleValue ||
+            !contentValue
+          ) {
+            toast(
+              "제목과 내용을 입력해 줘!"
+            );
+
+            return;
+          }
+
+          try {
+            await api(
+              "/api/posts",
+              {
+                method: "POST",
+
+                body:
+                  JSON.stringify({
+                    title:
+                      titleValue,
+
+                    content:
+                      contentValue
+                  })
+              }
+            );
+
+            form.reset();
+
+            modal.classList.add(
+              "hidden"
+            );
+
+            toast(
+              "게시글이 등록됐어!"
+            );
+
+            await loadPosts();
+          } catch (error) {
+            console.error(
+              "게시글 작성 오류:",
+              error
+            );
+
+            toast(
+              error.message
+            );
+          }
+        }
+      );
+    }
+  }
+
+  // =========================
+  // Tabs
+  // =========================
+
+  function setupTabs() {
+    const tabs =
+      $$(".tab");
+
+    if (
+      tabs.length === 0
+    ) {
+      return;
+    }
+
+    tabs.forEach(
+      (tab) => {
+        tab.addEventListener(
+          "click",
+          () => {
+            tabs.forEach(
+              (item) => {
+                item.classList.remove(
+                  "active"
+                );
+              }
+            );
+
+            tab.classList.add(
+              "active"
+            );
+
+            const view =
+              tab.dataset.view;
+
+            const sort =
+              tab.dataset.sort;
+
+            const feedTitle =
+              $("#feedTitle");
+
+            const postList =
+              document.querySelector(
+                ".main-column .post-list"
+              );
+
+            // AI 탭
+            if (
+              view === "ai"
+            ) {
+              if (feedTitle) {
+                feedTitle.textContent =
+                  "AI 계정";
+              }
+
+              if (postList) {
+                postList.innerHTML = `
+                  <div class="loading">
+                    오른쪽 AI 활동 패널에서
+                    AI 계정을 확인할 수 있어. 🤖
+                  </div>
+                `;
+              }
+
+              return;
+            }
+
+            // 최신 / 인기
+            if (feedTitle) {
+              feedTitle.textContent =
+                sort === "popular"
+                  ? "인기 게시글"
+                  : "최신 게시글";
+            }
+
+            // 현재 API는 최신순만 제공하므로
+            // 인기 탭에서도 현재 게시글을 표시
+            renderPosts(
+              posts
+            );
+          }
         );
       }
-
-      const role = email === ADMIN_EMAIL ? "developer" : "user";
-
-      const result = await pool.query(
-        `INSERT INTO users (google_id, email, name, avatar_url, role)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (email)
-         DO UPDATE SET
-           google_id=EXCLUDED.google_id,
-           name=EXCLUDED.name,
-           avatar_url=EXCLUDED.avatar_url,
-           role=CASE WHEN users.email=$2 THEN $5 ELSE users.role END
-         RETURNING id, google_id, email, name, avatar_url, role, created_at`,
-        [
-          profile.id,
-          email,
-          profile.displayName || "사용자",
-          profile.photos?.[0]?.value || null,
-          role
-        ]
-      );
-
-      done(null, result.rows[0]);
-    } catch (err) {
-      done(err);
-    }
-  }));
-}
-
-function requireAuth(req, res, next) {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({
-      error: "로그인이 필요합니다."
-    });
+    );
   }
 
-  next();
-}
+  // =========================
+  // Initialization
+  // =========================
 
-function requireAdmin(req, res, next) {
-  if (!req.isAuthenticated() || req.user.email !== ADMIN_EMAIL) {
-    return res.status(403).json({
-      error: "관리자 권한이 필요합니다."
-    });
+  async function init() {
+    console.log(
+      "AITOWN frontend starting..."
+    );
+
+    // 먼저 UI 이벤트 연결
+    setupWriteButton();
+    setupTabs();
+
+    // 사용자 정보
+    await loadMe();
+
+    // 게시글 + AI 목록
+    await Promise.all([
+      loadPosts(),
+      loadAI()
+    ]);
+
+    console.log(
+      "AITOWN frontend ready."
+    );
   }
 
-  next();
-}
+  // =========================
+  // Start after DOM ready
+  // =========================
 
-async function initDb() {
-  if (!process.env.DATABASE_URL) return;
-
-  const schema = fs.readFileSync(
-    path.join(__dirname, "schema.sql"),
-    "utf8"
-  );
-
-  await pool.query(schema);
-
-  console.log("Database initialized.");
-}
-
-app.get("/auth/google", (req, res, next) => {
   if (
-    !process.env.GOOGLE_CLIENT_ID ||
-    !process.env.GOOGLE_CLIENT_SECRET
+    document.readyState ===
+    "loading"
   ) {
-    return res.status(503).send(
-      "Google OAuth 환경변수가 아직 설정되지 않았습니다."
-    );
-  }
-
-  passport.authenticate(
-    "google",
-    {
-      scope: ["profile", "email"]
-    }
-  )(req, res, next);
-});
-
-app.get(
-  "/auth/google/callback",
-  passport.authenticate(
-    "google",
-    {
-      failureRedirect: "/?login=failed"
-    }
-  ),
-  (req, res) => {
-    res.redirect("/");
-  }
-);
-
-app.post("/auth/logout", (req, res, next) => {
-  req.logout(err => {
-    if (err) return next(err);
-
-    req.session.destroy(() => {
-      res.json({ ok: true });
-    });
-  });
-});
-
-app.get("/api/me", (req, res) => {
-  res.json({
-    user: req.user || null
-  });
-});
-
-app.get("/api/posts", async (req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT
-        p.id,
-        p.title,
-        p.content,
-        p.created_at,
-        u.name,
-        u.avatar_url,
-        u.role,
-        COUNT(c.id)::int AS comment_count
-      FROM posts p
-      JOIN users u ON u.id = p.user_id
-      LEFT JOIN comments c ON c.post_id = p.id
-      GROUP BY p.id, u.id
-      ORDER BY p.created_at DESC
-      LIMIT 50
-    `);
-
-    res.json({
-      posts: rows
-    });
-  } catch (err) {
-    console.error(err);
-
-    res.status(500).json({
-      error: "게시글을 불러오지 못했습니다."
-    });
-  }
-});
-
-app.post("/api/posts", requireAuth, async (req, res) => {
-  const title = String(req.body.title || "").trim();
-  const content = String(req.body.content || "").trim();
-
-  if (!title || !content) {
-    return res.status(400).json({
-      error: "제목과 내용을 입력해 주세요."
-    });
-  }
-
-  if (title.length > 120 || content.length > 5000) {
-    return res.status(400).json({
-      error: "글자 수 제한을 확인해 주세요."
-    });
-  }
-
-  try {
-    const { rows } = await pool.query(
-      "INSERT INTO posts (user_id, title, content) VALUES ($1,$2,$3) RETURNING id",
-      [req.user.id, title, content]
-    );
-
-    res.status(201).json({
-      id: rows[0].id
-    });
-  } catch (err) {
-    console.error(err);
-
-    res.status(500).json({
-      error: "게시글 작성에 실패했습니다."
-    });
-  }
-});
-
-app.get("/api/posts/:id/comments", async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `
-      SELECT
-        c.id,
-        c.content,
-        c.created_at,
-        u.name,
-        u.avatar_url,
-        u.role
-      FROM comments c
-      JOIN users u ON u.id = c.user_id
-      WHERE c.post_id=$1
-      ORDER BY c.created_at ASC
-      `,
-      [req.params.id]
-    );
-
-    res.json({
-      comments: rows
-    });
-  } catch (err) {
-    res.status(500).json({
-      error: "댓글을 불러오지 못했습니다."
-    });
-  }
-});
-
-app.post(
-  "/api/posts/:id/comments",
-  requireAuth,
-  async (req, res) => {
-    const content = String(req.body.content || "").trim();
-
-    if (!content) {
-      return res.status(400).json({
-        error: "댓글 내용을 입력해 주세요."
-      });
-    }
-
-    if (content.length > 2000) {
-      return res.status(400).json({
-        error: "댓글이 너무 깁니다."
-      });
-    }
-
-    try {
-      const post = await pool.query(
-        "SELECT id FROM posts WHERE id=$1",
-        [req.params.id]
-      );
-
-      if (!post.rows[0]) {
-        return res.status(404).json({
-          error: "게시글이 없습니다."
-        });
+    document.addEventListener(
+      "DOMContentLoaded",
+      init,
+      {
+        once: true
       }
-
-      const { rows } = await pool.query(
-        "INSERT INTO comments (post_id, user_id, content) VALUES ($1,$2,$3) RETURNING id",
-        [
-          req.params.id,
-          req.user.id,
-          content
-        ]
-      );
-
-      res.status(201).json({
-        id: rows[0].id
-      });
-    } catch (err) {
-      res.status(500).json({
-        error: "댓글 작성에 실패했습니다."
-      });
-    }
-  }
-);
-
-app.get("/api/ai", async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      "SELECT id, name, description, personality, is_active, created_at FROM ai_accounts ORDER BY id"
     );
-
-    res.json({
-      ai: rows
-    });
-  } catch (err) {
-    res.status(500).json({
-      error: "AI 목록을 불러오지 못했습니다."
-    });
+  } else {
+    init();
   }
-});
 
-app.get("/api/admin", requireAdmin, async (req, res) => {
-  const [users, posts, ai] = await Promise.all([
-    pool.query("SELECT COUNT(*)::int AS count FROM users"),
-    pool.query("SELECT COUNT(*)::int AS count FROM posts"),
-    pool.query("SELECT COUNT(*)::int AS count FROM ai_accounts")
-  ]);
-
-  res.json({
-    admin: req.user,
-    stats: {
-      users: users.rows[0].count,
-      posts: posts.rows[0].count,
-      ai: ai.rows[0].count
-    }
-  });
-});
-
-app.patch("/api/admin/ai/:id", requireAdmin, async (req, res) => {
-  const active = Boolean(req.body.is_active);
-
-  await pool.query(
-    "UPDATE ai_accounts SET is_active=$1 WHERE id=$2",
-    [active, req.params.id]
-  );
-
-  res.json({
-    ok: true
-  });
-});
-
-app.get("/health", async (req, res) => {
-  try {
-    if (!process.env.DATABASE_URL) {
-      return res.status(503).json({
-        ok: false,
-        service: "AITOWN",
-        database: "not-configured"
-      });
-    }
-
-    await pool.query("SELECT 1");
-
-    res.json({
-      ok: true,
-      service: "AITOWN",
-      database: "connected"
-    });
-  } catch (err) {
-    console.error("Health DB check failed:", err);
-
-    res.status(503).json({
-      ok: false,
-      service: "AITOWN",
-      database: "error"
-    });
-  }
-});
-
-app.use(
-  express.static(
-    path.join(__dirname, "public")
-  )
-);
-
-app.use((err, req, res, next) => {
-  console.error(err);
-
-  res.status(500).json({
-    error: "서버 오류가 발생했습니다."
-  });
-});
-
-initDb()
-  .then(() => {
-    app.listen(
-      PORT,
-      () => console.log(`AITOWN running on port ${PORT}`)
-    );
-  })
-  .catch(err => {
-    console.error(
-      "DB initialization failed:",
-      err
-    );
-
-    process.exit(1);
-  });
+})();
