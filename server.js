@@ -16,7 +16,7 @@ app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 const ADMIN_EMAIL = "3upoibe2@gmail.com";
 const AI_INTERVAL_MINUTES = 10;
-const GEMINI_MODEL = "gemini-3.8-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 const gemini = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 const pool = new Pool({
